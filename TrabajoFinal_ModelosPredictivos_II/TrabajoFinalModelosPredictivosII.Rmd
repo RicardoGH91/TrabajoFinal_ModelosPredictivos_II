@@ -1,0 +1,465 @@
+---
+title: "Trabajo final: Ciencia de Datos: Modelos Predictivos II"
+output: github_document
+---
+
+## INTRODUCCIóN
+
+La importancia de contar con una cartera de clientes confiables (clientes no morosos) en una institución de banca multiple es de suma importancia, ya que esto permite tomar decisiones a la hora de implementar promociones, tales como:
+
+-   Incremento de linea de crédito.
+-   Ofrecer tarjetas adicionales o de servicio
+
+De igual forma para la captación de nuevos clientes. Es por esto que se realizó un una investigación para determinar si un cliente es "mal pagador o no"es mal pagador". Se aplicararán modelos lineales generalizados (GLM siglas en ingles) Logit y Probit, debido a que la variable de interes es categorica dicotómica.
+
+```{r librerias, echo=FALSE , message = FALSE, warning = FALSE, comment=""}
+
+library(foreign) # cargar bases de datos de otros formatos(spss, sas, stata)
+library(forecast)
+library(gmodels) # tablas de contingencia o tablas cruzadas
+library(lmtest)# contrastes 
+library(ResourceSelection) # modelos logit y probit
+library(ROCR)
+library(openxlsx)
+library(dplyr)
+library(margins)
+library(Epi) # curvas ROC
+library(QuantPsyc) # Quantitative Psychology Tools, trabajo de matrices
+library(ggplot2)
+library(memisc) # combinar los modelos.
+library(dplyr)
+library(reshape2)
+# library(gridExtra)
+# library(plotly)
+library(knitr)
+# library(magrittr)
+
+```
+
+## Modelo de Regresion Logit y Probit para la clasificación de clientes en una institución de banca multiple
+
+Se tomaron en cuenta las siguientes variables para dicho caso de estudio:
+
+-   duration (plazo de la operación)\
+-   amount(monto de la operación)\
+-   installment(cuotas pagadas)\
+-   age(edad)\
+-   age2(edad al cuadrado)\
+-   cards(número de tarjetas de crédito)
+
+Para el caso de nuestra variable de interes, "Default" definimos al valor 1 como indicativo de "mal pagador" y 0 como indicativo de "buen pagador"
+
+Se cargan los datos y definimos los modelos de la siguiente manera:
+
+```{r Data_germancredit, include=FALSE, eval=TRUE}
+
+base <- read.csv("D:\\Personal Data\\My Folders\\Ricardo\\Cursos\\Cursos\\Ciencia de datos\\Modulos\\Modulo 4\\Base de datos y scripts\\Base y presentación\\germancredit.csv")
+
+base2 <- base %>% 
+  dplyr::select(Default, duration , amount , installment , age , cards) %>% 
+  mutate(age2 = (age)^2)
+
+```
+
+```{r Modelos_GLM, include=TRUE, eval=TRUE}
+
+ModLogit = glm(Default ~. ,
+         family = binomial(logit),
+         data = base2)
+
+ModProbit = glm(Default ~. ,
+               family = binomial(link = "probit"),
+               data = base2)
+
+Mat1<- mtable(ModLogit,ModProbit,digits = 6, sdigits = 3, summary.stats=FALSE)
+Mat1
+
+
+```
+
+Lo primero que podemos observar es que para todas las variables, con la unica excepción de "cards", el valor de probabilidad p \< 0.05, por lo tanto rechazamos la H0 donde H0:bi = 0, por lo tanto, las variables sirven para explicar si una persona es mal pagador en algun momento en el tiempo.
+
+Ademas las variables, duration, amount, installment y age2 son positivas, por lo tanto, si estas variables se incrementan, la probabilidad de que la persona sea catalogada como deudor o mal pagador tambien tiende a incrementarse.
+
+En caso contrario las variables age y cards son negativas, por lo tanto, un aumento en las variables age y cards conlleva a una disminución en la probabilidad de que la persona sea clasificada como deudor o mal pagador.
+
+Estas observaciones subrayan la importancia de considerar el impacto de cada variable en la evaluación del riesgo crediticio, proporcionando valiosa información para la toma de decisiones informada.
+
+Calcularemos algunos estadísticos los cuales como tal, no son una prueba de hipotesis, sin embargo, es un medio para la comparacion de los modelos:
+
+```{r Estadisticos, include=TRUE, eval=TRUE}
+
+Estadist_Logit <- Mat1$ModLogit[["sumstat"]]
+Estadist_Probit <- Mat1$ModProbit[["sumstat"]]
+
+MatStats <- data.frame(Estadist_Logit, Estadist_Probit)
+
+kable(MatStats)
+
+```
+
+Para este caso nos centraremos en los criterios BIC y AIC, criterios de informacion AKAIKE y SCHWARZ, el mejor modelo seria el que tiene menor valor.\
+El resultado sugiere que el mejor modelo es el modelo probit.
+
+Finalmente calculamos el efecto marginal de los modelos
+
+```{r EfectoMarginal, include=TRUE, eval=TRUE}
+
+margins_Logit <- margins(ModLogit)
+margins_probit <- margins(ModProbit)
+
+Marginal_models <- left_join(summary(margins_Logit),summary(margins_probit),
+                        by="factor")
+
+names(Marginal_models)[2] <- "MarginLogit"
+names(Marginal_models)[8] <- "MarginProbit"
+
+Marginal_models <- dplyr::select(Marginal_models, factor, MarginLogit, MarginProbit)
+kable(Marginal_models)
+```
+
+Podemos observar que el efecto marginal de los coeficientes para cada uno de los modelos es muy similar, para explicar la interpretación del efecto marginal tomaremos como ejemplo los coeficientes de las variables "plazo de la operación"(duration) y "Edad"(age):
+
+-   Un aumento en 1 unidad en el plazo de la operación se asocia a un aumento esperado de 0.005 mas probable que un individuo sea catalogado como deudor.
+-   Un aumento en 1 unidad en la Edad del individuo se asocia a una disminucion esperada de 0.0235 probable que un individuo sea catalogado como deudor.
+
+## Bondad de ajuste.
+
+Generalmente para estos modelos no se tiene criterios como la R\^2 que se utiliza en los MRLM, estos modelos lo que se busca es que se clasifique correctamente. Para esto utilizaremos el Criterio de Hosmer-lemeshow, el metodo funciona muy similar a una tabla de contingencia, la cual se evalua a traves de un estadistico chi-cuadrada, evalua la prob. de clasificacion de un grupo u otro, de tal manera que devuelva un valor p utilizando dicho contraste. Las hipotesis a tomar en cuenta es la siguiente:
+
+H0: Bondad de ajuste\
+H1: No se consigue bondad de ajuste
+
+```{r BondadAjuste, include=TRUE, eval=TRUE}
+
+hl_logit <- hoslem.test(base2$Default,
+                   fitted(ModLogit), g=10 )
+
+hl_Probit <- hoslem.test(base2$Default,
+                        fitted(ModProbit), g=10 )
+
+Estdistico <- c(hl_logit$statistic, hl_Probit$statistic)
+p_value <- c(hl_logit$p.value, hl_Probit$p.value)
+Nombres <- c("logit","Probit")
+estadisticos <- data.frame(row.names = Nombres, Estdistico, p_value)
+
+kable(estadisticos)
+
+```
+
+Para ambos casos el valor p \> 0.05, no podemos rezachar la h0, existe evidencia estadistica para decir que se tiene bondad de ajuste.
+
+## Matriz de clasificación
+
+Para continuar con el analisis, generaremos la matriz de clasificación, la cual es una herramienta que se utiliza para evaluar el rendimiento de un modelo de clasificación, su propósito principal es proporcionar una visión general de cuantas predicciones hizo el modelo correcta e incorrectamente en comparación con la verdad conocida y de acuerdo al umbral de probabilidad que se haya definido, donde el umbral de probabilidad es un punto de corte que permite decidir cuando clasificar una observación como perteneciente a la clase positiva y cuando clasificarla como perteneciente a la clase negativa.
+
+Para este caso tomaremos como umbral el promedio de valores proyectados.
+
+```{r MatClasif, include=TRUE, eval=TRUE}
+
+threshold_logit <- mean(fitted(ModLogit))
+
+ClassLog(ModLogit, base2$Default, cut = threshold_logit)
+
+threshold_Probit <- mean(fitted(ModProbit))
+
+ClassLog(ModProbit, base2$Default, cut = threshold_Probit)
+
+```
+
+Antes de interpretar los resultados debemos definir los siguientes conceptos de la matriz de clasificacion:
+
+Verdaderos Positivos (TP): Representa la cantidad de casos en los que el modelo predijo correctamente los valores uno. Verdaderos Negativos (TN): Representa la cantidad de casos en los que el modelo predijo correctamente los valores cero. Falsos Positivos (FP): Representa la cantidad de casos en los que el modelo predijo incorrectamente los valores uno. Falsos Negativos (FN): Representa la cantidad de casos en los que el modelo predijo incorrectamente los valores cero.
+
+Los resultados arrojados son los siguientes:
+
+```{r Result_MatClas, echo=FALSE , message = FALSE, warning = FALSE, comment=""}
+Nombres <- c("TN", "FN", "FP", "TP", "% TN", "% FN", "% FP", "% TP", "Clasificacion Global")
+CT_logit<- c(444, 132, 256, 168,  0.6342857, 0.4400000,  0.3657143, 0.5600000, 0.612)
+CT_Probit <- c(439, 130, 261, 170, 0.6271429, 0.4333333, 0.3728571, 0.5666667, 0.609)
+Interpretacion <- c("Cantidad de casos que el modelo predijo correctamente los valores uno.",
+                    "Cantidad de casos que el modelo predijo incorrectamente los valores cero.",
+                    "Cantidad de casos que el modelo predijo incorrectamente los valores uno.",
+                    "Cantidad de casos que el modelo predijo correctamente los valores uno.",
+                    "Porcentaje predichas por el modelo correctamente como cero.",
+                    "Porcentaje predichas por el modelo incorrectamente como cero.",
+                    "Porcentaje predichas por el modelo incorrectamente como uno.",
+                    "Porcentaje predichas por el modelo correctamente como uno.",
+                    "Porcentaje de clasificacion correctamente para el modelo"
+                    )
+
+Resultados <- data.frame(row.names = Nombres,  CT_logit, CT_Probit, Interpretacion)
+
+kable(Resultados)
+```
+
+Como podemos ver ambos modelos clasifican de manera muy similar y el % de clasificacion global = 61.2% VS 60.90%, se puede interpretar como el 61.2 % de los datos estan siendo clasificados correctamente para el modelo Logit vs El 60.9 % de los datos estan siendo clasificados correctamente para el modelo Probit.
+
+A partir de estas clasificaciones, definimos las siguientes formulas:\
+- Precision = tp/(tp + fp)\
+- Recall = tp/(tp + fn) =\> tambien se le conoce como sensitividad (recuperacion)\
+- Especificidad = tn/(tn + fp)
+
+Las 3 formulas definidas anteriormente esperamos que tiendan a 1, aqui es cuando se genera la disyuntiva, donde a veces vamos a preferir precision por encima de la sensitividad y la especificidad.
+
+Recall hace referencia al % de clasificacion correcta de 1 cuando son 1.\
+Especificidad hace referencia al % de clasificacion correcta de los ceros cuando son ceros.\
+Precision hace referencia al % de clasificacion 1 cuando son 1 considerando que se puede equivocar por los falsos positivos.
+
+## Curva ROC
+
+La curva denota que tan bien esta clasificandose el modelo (o bien discriminado), muestra cómo cambia la tasa de verdaderos positivos (sensibilidad) en función de la tasa de falsos positivos (1 - especificidad) para diferentes valores de umbral de probabilidad.
+
+-   Si la curva esta mas pegado al eje, o esta lo mas alejado a la linea de 45°, se esta discriminando correctamente.\
+-   Si un modelo tiene una curva muy pegada a la tangente, el modelo no sirve.
+
+El area bajo la curva esta comprendida entre 0.5 y 1, mientras mas cercano esta a 1, mejor sera el modelo, hay una buena sensitividad y buena especificidad.
+
+```{r Curva_ROC, include=TRUE, eval=TRUE}
+
+predLogit <- ROCR::prediction(ModLogit$fitted.values,base2$Default) # valores predichos
+perfLogit <- performance(predLogit,
+                    measure = "tpr", 
+                    x.measure = "fpr")
+
+predProbit <- ROCR::prediction(ModProbit$fitted.values,base2$Default) # valores predichos
+perfProbit <- performance(predProbit,
+                         measure = "tpr", 
+                         x.measure = "fpr")
+
+par(mfrow=c(1,2))
+plot(perfLogit,colorize = T, lty = 3,
+     main = "Curva ROC Modelo Logit")
+abline(0,1,col="black")
+
+plot(perfProbit,colorize = T, lty = 3,
+     main = "Curva ROC Modelo Probit")
+abline(0,1,col="black")
+
+# Area bajo la curva Logit
+aucl <- performance(predLogit, measure = "auc")
+aucl <- aucl@y.values[[1]]
+aucl
+
+# Area bajo la curva Probit
+aucp <- performance(predProbit, measure = "auc")
+aucp <- aucp@y.values[[1]]
+aucp
+```
+
+Como se comentó lineas arriba se espera que el modelo tenga una curva que este significativamente por encima de esta linea para considerarse util.  
+  
+Los valores del area bajo la curva es de:  
+  - 0.6558 para el modelo logit.  
+  - 0.6557 para el modelo probit.  
+  
+Ambas areas son muy similares.  
+
+El objetivo final es maximizar la cantidad de casos en los que el modelo predice correctamente los valores uno(TP) y la cantidad de casos en los que el modelo predice correctamente los valores cero(TN), para esto se debe encontrar el punto de corte optimo.
+
+Para encontrar este valor calculamos:   
+% de clasificacion correcta de 1 cuando son 1 -\> sensitividad\
+% de clasificacion correcta de los ceros cuando son ceros. -\> Especificidad
+
+Graficamos dichos valores y el punto de corte optimo es donde la sensitividad y la especificidad se intersectan.
+
+```{r Corte_OptimoLog, include=TRUE, eval=TRUE, echo=FALSE}
+
+perf_Logit_opt <- performance(predLogit,
+                     "sens",
+                     "spec")
+
+sen_l <-  slot(perf_Logit_opt,"y.values"[[1]]) # recupera sensitividad
+esp_l <- slot(perf_Logit_opt,"x.values"[[1]]) # recupera especificidad
+alf_l <- slot(perf_Logit_opt,"alpha.values"[[1]]) # recupera el punto de corte optimo
+
+# Recordemos que la interseccion entre la especificidad y la sensitividad es el punto de corte optimo
+
+mat_logit <- data.frame(alf_l, sen_l, esp_l)
+names(mat_logit)[1] <- "alf"
+names(mat_logit)[2] <- "sen"
+names(mat_logit)[3] <- "esp"
+mLogit <- melt(mat_logit,id=c("alf")) # toma los valores y los convierte en formato long: el formato log se basa en una columna para los posibles tipos de variables y otra columna para los valores de esas variables
+
+senlogit <- mLogit %>% 
+  dplyr::filter(variable == "sen")
+
+esplogit <- mLogit %>% 
+  dplyr::filter(variable == "esp")
+
+PuntoOptimo <- inner_join(senlogit, esplogit,
+                          by = "alf")
+PuntoOptimo <-PuntoOptimo %>% 
+  mutate ( RESTA = abs(value.x - value.y)) %>% 
+  dplyr::filter(RESTA==min(RESTA))
+
+valores <-paste("Punto de corte optimo: ",round(PuntoOptimo$alf,4))
+thresholdL_optimo <- round(PuntoOptimo$alf,4)
+
+par(mfrow=c(1,2))
+
+p1 <- ggplot(mLogit,
+             aes(alf,value, 
+                 group = variable,
+                 colour = variable)) + 
+  geom_line(size = 1.2) +
+  geom_hline(yintercept = PuntoOptimo$value.y, linetype = 4,
+             col = "black",size = .5, alpha= 0.5) +
+  geom_vline(xintercept = PuntoOptimo$alf, linetype = 4) +
+  annotate(geom = "text",
+           x = PuntoOptimo$alf + .2,
+           y = PuntoOptimo$value.y + .1,
+           label = valores , angle =0, size = 4)+
+  labs(title = "GRÁFICA DE SENSITIVIDAD Y ESPECIFICIDAD DEL MODELO LOGIT")
+
+p1
+```
+
+```{r Corte_OptimoProb, include=TRUE, eval=TRUE, echo=FALSE}
+
+perf_Probit_opt <- performance(predProbit,
+                              "sens",
+                              "spec")
+
+sen_P <-  slot(perf_Probit_opt,"y.values"[[1]]) # recupera sensitividad
+esp_P <- slot(perf_Probit_opt,"x.values"[[1]]) # recupera especificidad
+alf_P <- slot(perf_Probit_opt,"alpha.values"[[1]]) # recupera el punto de corte optimo
+
+# Recordemos que la interseccion entre la especificidad y la sensitividad es el punto de corte optimo
+
+mat_Probit <- data.frame(alf_P, sen_P, esp_P)
+names(mat_Probit)[1] <- "alf"
+names(mat_Probit)[2] <- "sen"
+names(mat_Probit)[3] <- "esp"
+mProbit <- melt(mat_Probit,id=c("alf")) # toma los valores y los convierte en formato long: el formato log se basa en una columna para los posibles tipos de variables y otra columna para los valores de esas variables
+
+senProbit <- mProbit %>% 
+  dplyr::filter(variable == "sen")
+
+espProbit <- mProbit %>% 
+  dplyr::filter(variable == "esp")
+
+PuntoOptProb <- inner_join(senProbit, espProbit,
+                          by = "alf")
+
+PuntoOptProb <-PuntoOptProb %>% 
+  mutate ( RESTA = abs(value.x - value.y)) %>% 
+  dplyr::filter(RESTA==min(RESTA))
+
+valores <-paste("Punto de corte optimo: ",round(PuntoOptProb$alf,4))
+thresholdP_optimo <- round(PuntoOptProb$alf,4)
+
+p2 <- ggplot(mProbit,
+             aes(alf,value, 
+                 group = variable,
+                 colour = variable)) + 
+  geom_line(size = 1.2) +
+  geom_hline(yintercept = PuntoOptProb$value.y, linetype = 4,
+             col = "black",size = .5, alpha= 0.5) +
+  geom_vline(xintercept = PuntoOptProb$alf, linetype = 4) +
+  annotate(geom = "text",
+           x = PuntoOptProb$alf + .2,
+           y = PuntoOptProb$value.y + .1,
+           label = valores , angle =0, size = 4)+
+  labs(title = "GRÁFICA DE SENSITIVIDAD Y ESPECIFICIDAD DEL MODELO PROBIT")
+
+p2
+```
+
+Ahora que hemos encontrado el valor que maximiza la especificidad y sensitividad calcularemos la matriz de clasificacion con este nuevo umbral:
+
+```{r MATClasOpt, include=TRUE, eval=FALSE, echo=FALSE}
+
+ClassLog(ModLogit, base2$Default, cut = thresholdL_optimo)
+
+ClassLog(ModProbit, base2$Default, cut = thresholdP_optimo)
+
+```
+
+```{r ResultadosFinales, include=TRUE, eval=TRUE, echo=FALSE}
+
+Nombres <- c("TN", "FN", "FP", "TP", "% TN", "% FN", "% FP", "% TP", "Clasificacion Global")
+CT_logit<- c(444, 132, 256, 168,  0.6342857, 0.4400000,  0.3657143, 0.5600000, 0.612)
+CT_Probit <- c(439, 130, 261, 170, 0.6271429, 0.4333333, 0.3728571, 0.5666667, 0.609)
+CT_logit_Optimo<- c(414, 123, 286, 177,  0.5914286, 0.4100000,  0.4085714, 0.5900000, 0.591)
+CT_Probit_optimo <- c(416, 123, 284, 177, 0.5942857, 0.4100000, 0.4057143, 0.5900000, 0.593)
+Interpretacion <- c("Cantidad de casos que el modelo predijo correctamente los valores uno.",
+                    "Cantidad de casos que el modelo predijo incorrectamente los valores cero.",
+                    "Cantidad de casos que el modelo predijo incorrectamente los valores uno.",
+                    "Cantidad de casos que el modelo predijo correctamente los valores uno.",
+                    "Porcentaje predichas por el modelo correctamente como cero.",
+                    "Porcentaje predichas por el modelo incorrectamente como cero.",
+                    "Porcentaje predichas por el modelo incorrectamente como uno.",
+                    "Porcentaje predichas por el modelo correctamente como uno.",
+                    "Porcentaje de clasificacion correctamente para el modelo"
+                    )
+
+Resultados <- data.frame(row.names = Nombres,  CT_logit, CT_Probit, CT_logit_Optimo, CT_Probit_optimo, Interpretacion)
+
+kable(Resultados)
+
+```
+
+Podemos ver que con este nuevo umbral el porcentaje de clasificación para el modelo Logit disminuyo 4.28 % en la predicción correcta de los valores cero pero incremento 3% en la predicción de valores uno, en otras palabras, el modelo logit tiene un % de clasificación de 59% de probabilidad de predecir a una persona deudora, y 59.14% de probabilidad de predecir a una persona que no debe.
+
+Para el modelo Probit, disminuyo 3.28% en la predicción correcta de los valores cero pero incremento 2.33% en la predicción de valores uno, en otras palabras, el modelo logit tiene un % de clasificación de 59% de probabilidad de predecir a una persona deudora, y 59.42% de probabilidad de predecir a una persona que no debe.
+
+Para ambos modelos disminuyo el porcentaje de clasificación global a 59%.
+
+Ahora bien con estos resultados aplicaremos los modelos a 3 clientes:
+
+```{r Prediccion, include=TRUE, eval=TRUE, echo=FALSE}
+
+x1 <- c(4,18,72)
+x2 <- c(250,3271,18424)
+x3 <- c(1,3,4)
+x4 <- c(19,33,75)
+x5 <- c(1,2,4)
+x6 <- x4^2
+
+newdata <-  data.frame(duration= x1,
+                       amount = x2,
+                       installment = x3,
+                       age = x4,
+                       cards = x5,
+                       age2 = x6)
+Clientes <- c("Cliente 1", "Cliente 2", "Cliente 3")
+
+Prob_Logit<- predict(ModLogit, newdata, type = "response")
+
+Prob_Probit<- predict(ModProbit, newdata, type = "response")
+
+pronosticos <- data.frame(Clientes, newdata,Prob_Logit,Prob_Probit)
+
+kable(pronosticos)
+```
+
+Podemos observar que para los clientes con los valores presentados en la tabla, se obtiene lo siguiente: 
+
+la probabilidad que el cliente 1 sea catalogada como "mal pagador" es de 0.22 con el modelo logit y Probit.  
+la probabilidad que el cliente 2 sea catalogada como "mal pagador" es de 0.24 con el modelo logit y Probit.  
+la probabilidad que el cliente 3 sea catalogada como "mal pagador" es de 0.87 con el modelo logit y Probit.  
+
+
+## Conclusiones
+
+Revisando los modelos anteriores, podemos decir que:
+- Ambos modelos se ajustan(Bondad de ajuste).  
+- Ambos modelos clasifican de manera muy similar y el % de clasificacion global = 59.1 % VS 59.3 %.
+- En las predicciones, ambos modelos arrojan probabilidades similares.
+
+Sin embargo, si nos enfocamos en los criterios BIC y AIC, criterios de informacion AKAIKE y SCHWARZ, el mejor modelo seria el que tiene menor valor.
+
+Por lo anterior el resultado sugiere que el mejor modelo es el modelo PROBIT:
+
+```{r Criterios, include=TRUE, eval=TRUE, echo=FALSE}
+
+Nombres <- c("AIC","BIC")
+CT_logit<- c(1166.1341092, 1200.4883962)
+CT_Probit <- c(1165.8936300, 1200.2479169)
+
+Resultados <- data.frame(row.names = Nombres,  CT_logit, CT_Probit)
+
+kable(Resultados)
+
+```
